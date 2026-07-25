@@ -59,8 +59,6 @@ def run(outdir, seed=0, steps=1500):
     # Train the deep hedger with the CVaR-95 objective, using the make_batch_gbm function to generate GBM paths.
     # Note that the model is saved to results/model_gbm.pt, and will be reused in the later policy analysis.
     # history is the list of loss values over the training steps, but we don't use it here. We just want the trained model.
-    
-    
     model, _ = train_hedger(make_batch_gbm(batch=8192), N, n_features=2, loss="cvar",
                             alpha=0.95, cost_rate=COST, recurrent=True,
                             steps=steps, seed=seed)

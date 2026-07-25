@@ -1,4 +1,4 @@
-"""Correctness tests — each one guards a claim an interviewer might probe.
+"""Correctness tests. Sanity checks.
 Run: pytest tests/ -q
 """
 import sys, os
@@ -10,8 +10,10 @@ from deephedge.engine import roll_pnl, cvar, entropic_risk
 from deephedge.deep import HedgerNet, pnl_torch, cvar_ru
 
 
+# If the simulator is right, the terminal price is lognormal with known mean and std. Check both
+# against the closed form. Broken drift term or vol scaling would show up here.
 def test_gbm_matches_lognormal_moments():
-    """Simulator sanity: terminal mean/std match closed form."""
+    """Simulator sanity check: terminal mean/std match closed form."""
     S = simulate_gbm(100, 0.0, 0.2, 1.0, 252, 200_000, seed=1)
     st = S[:, -1]
     assert abs(st.mean() - 100.0) < 0.15                      # E[S_T] = S0 (mu=0)
@@ -19,6 +21,8 @@ def test_gbm_matches_lognormal_moments():
     assert abs(st.std() - true_std) / true_std < 0.02
 
 
+# The BS pricer and the simulator have to agree: Monte Carlo the payoff and it should land on the
+# closed-form price. Ties the analytic formula to the paths the hedger actually trades on.
 def test_bs_price_against_monte_carlo():
     S = simulate_gbm(100, 0.0, 0.2, 30/365, 30, 400_000, seed=2)
     mc = np.maximum(S[:, -1] - 100.0, 0.0).mean()
@@ -26,6 +30,9 @@ def test_bs_price_against_monte_carlo():
     assert abs(mc - float(price)) < 0.02
 
 
+# The sharpest correctness check in the suite. A frictionless delta hedge's error shrinks like
+# 1/sqrt(n), so on a log-log plot the hedging-error std has slope -1/2. If roll_pnl ever peeked at
+# the future move when placing a trade, the error would collapse and this slope would break.
 def test_no_lookahead_slope():
     """The sqrt(n) law: hedging-error slope ~ -1/2. A look-ahead bug breaks this."""
     p0 = float(bs_price_delta(100, 100, 30/365, 0.2)[0])
@@ -43,6 +50,8 @@ def test_no_lookahead_slope():
     assert -0.6 < slope < -0.4
 
 
+# Costs can only ever hurt: hold the strategy and paths fixed, turn costs on, and every single
+# path's P&L must come out no better than the free version. Guards the sign of the cost term.
 def test_costs_reduce_pnl_monotonically():
     S = simulate_gbm(100, 0.0, 0.2, 30/365, 30, 5_000, seed=4)
     payoff = np.maximum(S[:, -1] - 100, 0)
@@ -52,6 +61,8 @@ def test_costs_reduce_pnl_monotonically():
     assert np.all(p_cost <= p_free + 1e-9)
 
 
+# Pin down the two limits of CVaR so the definition can't silently drift: at alpha->0 it averages
+# everything (so it's just -mean), and at alpha->1 it's down to the single worst outcome (-min).
 def test_cvar_limits():
     """CVaR -> -mean as alpha->0 ; -> -min as alpha->1."""
     rng = np.random.default_rng(0)
@@ -60,6 +71,9 @@ def test_cvar_limits():
     assert abs(cvar(pnl, 0.99999) - (-pnl.min())) < 0.2
 
 
+# The numpy scorer (engine.roll_pnl) and the torch scorer (deep.pnl_torch) must compute the exact
+# same P&L, or training would optimise a different number than we report. Feed both the same random
+# positions and demand they agree to floating-point tolerance.
 def test_torch_numpy_pnl_agree():
     S = simulate_gbm(100, 0.0, 0.2, 30/365, 30, 1_000, seed=5)
     payoff = np.maximum(S[:, -1] - 100, 0)
@@ -70,6 +84,8 @@ def test_torch_numpy_pnl_agree():
     assert np.allclose(a, b, atol=1e-8)
 
 
+# The differentiable CVaR (cvar_ru) is only worth training on if its minimum over w actually equals
+# the true sort-and-average CVaR. Sweep w on a grid, take the min, and check it lands on cvar().
 def test_cvar_ru_matches_sorted_cvar_at_optimum():
     """Minimizing the RU form over w recovers the sort-and-average CVaR."""
     rng = np.random.default_rng(2)
@@ -79,6 +95,9 @@ def test_cvar_ru_matches_sorted_cvar_at_optimum():
     assert abs(vals.min().item() - cvar(pnl.numpy(), 0.95)) < 5e-3
 
 
+# End-to-end training only works if the loss reaches every day's network. Backprop once and confirm
+# each per-step net picked up a nonzero gradient — a detached path or broken recurrence would leave
+# some day with no signal, and that day would never learn.
 def test_gradients_reach_every_step_network():
     """Autograd flows through the whole trading episode into every day's net."""
     torch.manual_seed(0)
@@ -95,6 +114,8 @@ def test_gradients_reach_every_step_network():
         assert gnorm > 0, f"no gradient reached step-{k} network"
 
 
+# Two things the Heston simulator has to get right: variance never goes negative (the full-truncation
+# clip), and it mean-reverts toward b. Starting at v0 = b, the terminal variance should still average b.
 def test_heston_variance_stays_nonnegative_and_mean_reverts():
     S, V = simulate_heston(100, 0.04, 1.0, 0.04, 2.0, -0.7, 30/365, 30,
                            50_000, seed=7)

@@ -19,7 +19,18 @@ class HedgerNet(nn.Module):
     Output: position to hold over [t_k, t_{k+1}).
     Architecture follows Buehler et al. (2019): 2 hidden layers, ReLU.
     """
+    # Build one small net per trading date. If recurrent, each net also takes the previous position
+    # as an input (hence the +1 to in_dim), which is what lets the model see where it already is and
+    # decide not to trade. Hidden width defaults to a touch wider than the input, following the paper.
     def __init__(self, n_steps, n_features, hidden=None, recurrent=True):
+        """Build the per-step networks.
+
+        Args:
+            n_steps: number of trading dates (one network each).
+            n_features: number of market features per date.
+            hidden: hidden-layer width; defaults to in_dim + 15 if None.
+            recurrent: if True, feed the previous position in as an extra input.
+        """
         super().__init__()
         self.n_steps = n_steps
         self.recurrent = recurrent
@@ -32,8 +43,17 @@ class HedgerNet(nn.Module):
             for _ in range(n_steps)
         ])
 
+    # Walk the episode forward one day at a time, carrying the position we chose yesterday into
+    # today's network. Stacking the per-step outputs gives the full position matrix in one shot.
     def forward(self, feats):
-        """feats: (batch, n_steps, n_features) -> deltas (batch, n_steps)."""
+        """Run the hedger over a batch of paths.
+
+        Args:
+            feats: (batch, n_steps, n_features) market features for each path and date.
+
+        Returns:
+            (batch, n_steps) positions held over each interval.
+        """
         prev = torch.zeros(feats.shape[0], 1, device=feats.device)
         out = []
         for k in range(self.n_steps):
@@ -46,8 +66,22 @@ class HedgerNet(nn.Module):
         return torch.cat(out, dim=1)
 
 
+# The differentiable twin of engine.roll_pnl. Same arithmetic, written in torch so gradients flow
+# from the risk measure back through every trading decision. test_torch_numpy_pnl_agree pins the two
+# implementations together, so this staying in step with the numpy version is a tested guarantee.
 def pnl_torch(S, deltas, payoff, p0, cost_rate=0.0):
-    """Terminal P&L, differentiable. Mirrors engine.roll_pnl exactly."""
+    """Terminal P&L in torch, differentiable end-to-end.
+
+    Args:
+        S: (batch, n_steps+1) price paths.
+        deltas: (batch, n_steps) positions held over each interval.
+        payoff: (batch,) option payoff at maturity.
+        p0: cash collected upfront.
+        cost_rate: proportional transaction cost.
+
+    Returns:
+        (batch,) terminal P&L tensor, mirroring engine.roll_pnl exactly.
+    """
     dS = S[:, 1:] - S[:, :-1]
     gains = (deltas * dS).sum(dim=1)
     zeros = torch.zeros(deltas.shape[0], 1, device=deltas.device)
@@ -57,13 +91,35 @@ def pnl_torch(S, deltas, payoff, p0, cost_rate=0.0):
     return -payoff + p0 + gains - costs
 
 
+# Torch version of engine.entropic_risk, for use as a training loss. The logsumexp is the stable
+# way to write (1/lam) log mean exp(-lam * pnl) — subtracting log(N) turns the sum into a mean.
 def entropic(pnl, lam=1.0):
+    """Entropic risk of a P&L tensor (differentiable training loss).
+
+    Args:
+        pnl: (batch,) terminal P&L tensor.
+        lam: risk-aversion parameter.
+
+    Returns:
+        Scalar loss tensor; lower is better.
+    """
     return torch.logsumexp(-lam * pnl - np.log(pnl.shape[0]), dim=0) / lam
 
 
+# CVaR written the way you can actually backprop through it. Instead of sorting (not differentiable),
+# Rockafellar-Uryasev turns CVaR into a minimisation over a scalar w: at the optimum w sits at the
+# VaR and the objective equals the true CVaR. We just let Adam optimise w alongside the net weights.
 def cvar_ru(pnl, w, alpha=0.95):
-    """CVaR via Rockafellar-Uryasev: min_w  w + E[(-pnl - w)^+]/(1-alpha).
-    Differentiable; w is a trained scalar that converges to the VaR."""
+    """CVaR via the Rockafellar-Uryasev representation: w + E[(-pnl - w)^+] / (1 - alpha).
+
+    Args:
+        pnl: (batch,) terminal P&L tensor.
+        w: trainable scalar that converges to the VaR at the optimum.
+        alpha: CVaR tail level in (0, 1).
+
+    Returns:
+        Scalar loss tensor; minimising it over w and the net weights minimises CVaR.
+    """
     return w + torch.relu(-pnl - w).mean() / (1.0 - alpha)
 
 

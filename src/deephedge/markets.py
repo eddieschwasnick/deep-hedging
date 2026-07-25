@@ -14,10 +14,23 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Black-Scholes world
 # ---------------------------------------------------------------------------
+# Black-Scholes stock paths. We simulate in log-space, so the increments are exactly normal and
+# there's no discretization error in the SDE itself — the only randomness is the Brownian noise.
+# One call returns the whole batch, shape (n_paths, n_steps+1), with every path starting at s0.
 def simulate_gbm(s0, mu, sigma, T, n_steps, n_paths, seed=0):
-    """Geometric Brownian motion: dS = mu S dt + sigma S dW.
+    """Simulate geometric Brownian motion paths: dS = mu S dt + sigma S dW.
 
-    Returns S of shape (n_paths, n_steps+1). Column 0 is s0 for every path.
+    Args:
+        s0: initial spot price (column 0 of every path).
+        mu: drift; 0.0 gives the risk-neutral paths used throughout the experiments.
+        sigma: volatility.
+        T: horizon in years.
+        n_steps: number of time steps (columns 1..n_steps).
+        n_paths: number of independent paths to simulate.
+        seed: rng seed for reproducibility.
+
+    Returns:
+        (n_paths, n_steps+1) array of prices; column 0 is s0 for every path.
     """
     rng = np.random.default_rng(seed)
     dt = T / n_steps
@@ -30,17 +43,28 @@ def simulate_gbm(s0, mu, sigma, T, n_steps, n_paths, seed=0):
     return s0 * np.exp(log_paths)
 
 
+# Standard normal CDF, vectorized over an array via erf (numpy has no built-in normal CDF).
 def _norm_cdf(x):
     from math import erf, sqrt
-    # vectorized standard normal CDF via erf
     return 0.5 * (1.0 + np.vectorize(lambda v: erf(v / np.sqrt(2)))(x))
 
 
+# The textbook price and hedge ratio the whole project measures itself against. delta = dPrice/dS
+# is the number of shares Black-Scholes says to hold. Inputs can be arrays, so it doubles as the
+# day-by-day delta-hedge engine in baselines. At expiry the formula degenerates, so we special-case
+# it: price becomes the payoff and delta becomes the 0/1 indicator of finishing in the money.
 def bs_price_delta(S, K, T_remaining, sigma, r=0.0):
-    """Black-Scholes call price and delta.
+    """Black-Scholes European call price and delta.
 
-    S, T_remaining can be arrays (same shape). Returns (price, delta).
-    delta = dPrice/dS = the number of shares the textbook says to hold.
+    Args:
+        S: spot price(s); scalar or array.
+        K: strike.
+        T_remaining: time to maturity; scalar or array matching S.
+        sigma: volatility.
+        r: risk-free rate (default 0.0).
+
+    Returns:
+        (price, delta) with the same shape as S. delta = dPrice/dS is the shares-to-hold ratio.
     """
     S = np.asarray(S, dtype=float)
     T_remaining = np.asarray(T_remaining, dtype=float)
@@ -60,14 +84,29 @@ def bs_price_delta(S, K, T_remaining, sigma, r=0.0):
 # ---------------------------------------------------------------------------
 # Heston world (stochastic volatility) — for Week 2
 # ---------------------------------------------------------------------------
+# Stochastic-vol world: the variance itself follows a mean-reverting process correlated with the
+# stock. We step it forward with full-truncation Euler — clip variance at 0 before using it, which
+# is the standard fix for the classic Heston gotcha where a naive scheme lets variance go negative.
+# The negative rho gives the leverage effect (vol spikes when the stock drops).
 def simulate_heston(s0, v0, alpha, b, sigma_v, rho, T, n_steps, n_paths, seed=0):
-    """Heston model with full-truncation Euler for the variance.
+    """Simulate Heston stock and variance paths (full-truncation Euler).
 
-    dS = sqrt(V) S dB
-    dV = alpha (b - V) dt + sigma_v sqrt(V) dW,   corr(dB, dW) = rho
+    Dynamics: dS = sqrt(V) S dB, dV = alpha (b - V) dt + sigma_v sqrt(V) dW, corr(dB, dW) = rho.
 
-    Returns (S, V), each (n_paths, n_steps+1). Variance is clipped at 0 so it
-    never goes negative (the classic Heston-simulation gotcha).
+    Args:
+        s0: initial spot price.
+        v0: initial variance.
+        alpha: mean-reversion speed of the variance.
+        b: long-run variance the process reverts to.
+        sigma_v: vol-of-vol.
+        rho: correlation between the stock and variance Brownian motions.
+        T: horizon in years.
+        n_steps: number of time steps.
+        n_paths: number of paths to simulate.
+        seed: rng seed for reproducibility.
+
+    Returns:
+        (S, V), each (n_paths, n_steps+1). Variance is clipped at 0 so it never goes negative.
     """
     rng = np.random.default_rng(seed)
     dt = T / n_steps

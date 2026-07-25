@@ -17,18 +17,38 @@ from deephedge.baselines import delta_hedge_gbm
 from deephedge.deep import train_hedger
 from deephedge.plotting import style, BLUE
 
+# Fewer paths than the headline runs (30k not 50k) because this script trains a whole model per
+# cost level — four trainings back to back — so we trade a little tail precision for wall-clock time.
 EVAL_PATHS = 30_000
+
+# The cost levels we sweep, from near-frictionless (0.1%) up to a heavy 2%. Spanning an order of
+# magnitude is the point: it's how we show the deep hedger's edge grows as frictions get worse.
 COSTS = [0.001, 0.005, 0.01, 0.02]
 
 
+# Retrain a hedger at each cost level and record how much it cuts the CVaR-95 tail vs delta hedging,
+# then plot reduction against cost. Each level gets its own fresh eval paths and its own trained model.
 def run(outdir, seed=0, steps=1200):
+    """Sweep the transaction-cost level and plot the deep hedger's edge against it.
+
+    Args:
+        outdir: directory to save the figure into.
+        seed: random seed for training the hedger at every cost level.
+        steps: number of training steps per cost level.
+
+    Returns:
+        rows: list of per-cost metric dicts (evaluate() output with an added "cost" key).
+    """
     style()
     rows = []
+    # One full train-and-score cycle per cost level. eps is passed to both the trainer (so the model
+    # learns under those frictions) and the scorer (so it's judged under the same ones).
     for eps in COSTS:
         print(f"[sweep] cost = {eps:.2%}")
         model, _ = train_hedger(make_batch_gbm(batch=8192), N, n_features=2, loss="cvar",
                                 alpha=0.95, cost_rate=eps, recurrent=True,
                                 steps=steps, seed=seed, log_every=0)
+        # Eval seed keyed off eps so each cost level gets its own reproducible out-of-sample paths.
         S = simulate_gbm(S0, 0.0, SIGMA, T, N, n_paths=EVAL_PATHS,
                          seed=700_000 + int(eps * 1e4))
         payoff = np.maximum(S[:, -1] - K, 0.0)
@@ -42,6 +62,7 @@ def run(outdir, seed=0, steps=1200):
               f"deep {m['deep_hedge']['cvar95']:.3f}  "
               f"(-{m['cvar95_reduction_pct']:.0f}%)")
 
+    # Reduction (%) against cost (%): the headline curve, one point per cost level, labelled inline.
     fig, ax = plt.subplots(figsize=(7.6, 4.6))
     xs = [r["cost"] * 100 for r in rows]
     ys = [r["cvar95_reduction_pct"] for r in rows]

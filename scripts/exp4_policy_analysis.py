@@ -21,8 +21,22 @@ from deephedge.deep import HedgerNet
 from deephedge.plotting import style, BLUE, ORANGE, GREEN
 
 
+# Reload the GBM model trained in exp1 (no retraining here — we're dissecting a fixed policy) and
+# build the two-panel figure that shows where and why it parts ways with delta hedging.
 def run(outdir):
+    """Build the policy-divergence figure from the trained GBM model.
+
+    Args:
+        outdir: directory holding model_gbm.pt; the figure is written to its figures/ subdir.
+
+    Returns:
+        None. Saves results/figures/policy_divergence.png.
+
+    Raises:
+        FileNotFoundError: if model_gbm.pt isn't in outdir yet (run exp1 first).
+    """
     style()
+    # Rebuild the same architecture (N steps, 2 features, recurrent) so the saved weights load cleanly.
     model = HedgerNet(N, 2, recurrent=True)
     model.load_state_dict(torch.load(os.path.join(outdir, "model_gbm.pt"),
                                      weights_only=True))

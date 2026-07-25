@@ -17,19 +17,44 @@ from deephedge.baselines import delta_hedge_heston
 from deephedge.deep import train_hedger
 from deephedge.plotting import style, ORANGE, GREEN
 
+# Same 1% proportional cost as the GBM headline so the two results are directly comparable. The
+# only thing changing between exp1 and exp2 is the market. See exp1 for why 1% (large enough to see).
 COST = 0.01
+
+# 50,000 fresh paths to estimate the tail. At CVaR-95 that's 2,500 tail paths behind the metric,
+# enough for a stable number without making the script crawl.
 EVAL_PATHS = 50_000
+
+# Evaluation seed, held fixed and separate from any training seed so every run scores on the same
+# out-of-sample paths. Different from exp1's seed so GBM and Heston aren't secretly reusing paths.
 EVAL_SEED = 999_002
 
 
+# Train the Heston deep hedger, then score it against the inst-vol delta hedge on fresh paths and
+# save the P&L histogram plus metrics. Mirrors exp1 step for step, just in the stochastic-vol world.
 def run(outdir, seed=0, steps=1500):
+    """Run the Heston headline comparison and write the figure and metrics.
+
+    Args:
+        outdir: directory to save the model and figures into.
+        seed: random seed for training the deep hedger.
+        steps: number of training steps for the deep hedger.
+
+    Returns:
+        m: dict of metrics (CVaR-95/99 reduction, turnover, mean and std P&L) for both hedgers.
+    """
     style()
     print(f"[Heston] training deep hedger  (CVaR-95, cost={COST:.1%}, seed={seed})")
+
+    # Train on Heston batches. n_features=3 here (not 2) because the hedger also sees V_t; the model
+    # is saved to results/model_heston.pt. history is discarded — we only want the trained weights.
     model, _ = train_hedger(make_batch_heston(batch=8192), N, n_features=3, loss="cvar",
                             alpha=0.95, cost_rate=COST, recurrent=True,
                             steps=steps, seed=seed)
     torch.save(model.state_dict(), os.path.join(outdir, "model_heston.pt"))
 
+    # Fresh evaluation paths, then both strategies' positions: the benchmark plugs current vol into
+    # the BS delta, the deep hedger reads the same (log-moneyness, time-left, V_t) it trained on.
     S, V = simulate_heston(S0, HESTON["v0"], HESTON["alpha"], HESTON["b"],
                            HESTON["sigma_v"], HESTON["rho"], T, N,
                            n_paths=EVAL_PATHS, seed=EVAL_SEED)
@@ -40,6 +65,7 @@ def run(outdir, seed=0, steps=1500):
 
     m = evaluate(S, d_bench, d_deep, payoff, P0_HESTON, COST)
 
+    # Roll both P&L distributions again for the histogram (evaluate already has the summary numbers).
     from deephedge.engine import roll_pnl
     pnl_b = roll_pnl(S, d_bench, payoff, P0_HESTON, COST)
     pnl_d = roll_pnl(S, d_deep,  payoff, P0_HESTON, COST)

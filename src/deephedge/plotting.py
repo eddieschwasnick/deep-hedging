@@ -12,8 +12,15 @@ RED       = "#8a2846"
 GREEN    = "#2e7d4f"
 GREY     = "#9aa3ab"
 
-# pretty fonts and figure sizes.
+# Call this once at the top of a script to give every figure the same fonts, sizes, and grid.
+# It mutates matplotlib's global rcParams rather than returning anything, so the settings apply to
+# every plot made afterward — that's what keeps the four result figures looking like one set.
 def style():
+    """Apply the shared Matplotlib look (fonts, sizes, grid) for all figures.
+
+    Returns:
+        None. Mutates the global matplotlib rcParams in place.
+    """
     plt.rcParams.update({
         "figure.dpi": 110,
         "savefig.dpi": 130,
