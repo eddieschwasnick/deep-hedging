@@ -16,12 +16,14 @@ transaction costs, CVaR-95 training objective.
 
 | Market | Metric | Delta hedge | Deep hedge | Change |
 |---|---|---:|---:|---:|
-| GBM | 95% CVaR of hedging error | 4.74 | 4.44 | **−6.33%** |
-| GBM | mean P&L | -2.74 | -1.35 | |
-| GBM | turnover (shares traded) | 2.72 | 1.36 | |
-| Heston | 95% CVaR of hedging error | 6.50 | 5.16 | **−20.60%** |
-| Heston | mean P&L | -2.38 | -0.68 | |
-| Heston | turnover | 2.36 | 0.67 | |
+| GBM | 95% CVaR of hedging error | 4.74 | 3.04 | **−35.9%** |
+| GBM | mean P&L | -2.74 | -1.80 | |
+| GBM | std P&L | 0.90 | 0.69 | |
+| GBM | turnover (shares traded) | 2.72 | 1.79 | |
+| Heston | 95% CVaR of hedging error | 6.50 | 4.76 | **−26.8%** |
+| Heston | mean P&L | -2.38 | -1.02 | |
+| Heston | std P&L | 1.61 | 1.41 | |
+| Heston | turnover | 2.36 | 1.01 | |
 
 ![GBM headline](results/figures/gbm_headline.png)
 ![Heston headline](results/figures/heston_headline.png)
@@ -29,30 +31,36 @@ transaction costs, CVaR-95 training objective.
 ## Robustness across cost levels
 
 The deep hedger's edge over delta hedging as a function of the proportional
-cost ε (each point is a freshly trained model, evaluated on 30,000 fresh paths):
+cost ε, swept every 0.25% from 0.25% to 2%. Each point is the mean CVaR-95
+reduction over 3 independently trained seeds (evaluated on 30,000 fresh paths),
+and the shaded band is ±1 std across those seeds:
 
 ![Cost sweep](results/figures/cost_sweep.png)
 
-The edge is positive at every cost level tested (9–24% CVaR-95 reduction).
-The non-monotonic wiggle across levels is single-seed training variance — tail
-objectives are noisy because only ~5% of each batch carries gradient — which is
-why the next step listed under limitations is multi-seed reporting. At
-near-zero costs the edge is smallest, as expected: delta hedging is close to
-optimal in a frictionless market, so there is little left to gain.
+The edge is positive at every cost level (≈20–38% CVaR-95 reduction) and the
+band is tight. Because of this we can infer that this isn't luck and holds significant signals.
+The edge is shows it is the smallest at near-zero costs which is expected as delta hedging should be
+close to optimal in a frictionless market. This leads to there being less to gain in the beginning but still 
+then grows and plateaus in the 20–38% range as frictions bite. The band widens slightly around 1–1.5% cost: at
+those mid-cost levels the hedge-tightly-vs-trade-rarely tradeoff is most
+balanced, so the CVaR loss surface is flattest and the tail objective (the trailing 5%) takes the longest to converge.
+Testing had to take place as the original runs of the experiment saw wide variance at specific transaction cost levels 
+due to the delay in comvergence. This is why every model here trains for 3,000 steps rather then shorter.
 
-## Where (and why) the learned policy diverges from delta hedging
+## Where and why the learned strategy diverges from delta hedging
 
 ![Policy divergence](results/figures/policy_divergence.png)
 
-Two mechanisms, both cost-driven and both emergent (never programmed in):
+Two mechanisms can be seen, both cost-driven and lead to a similar summary:
 
-1. **A flattened delta.** The learned position-vs-spot curve is a smoothed,
-   "lazier" version of the BS delta — it declines to chase the steep gamma
-   region near the strike because chasing costs money every day.
-2. **A no-trade band.** Plotting the network's chosen trade against its current
-   distance from the BS delta reveals a flat region around zero: when the gap
-   is small, the optimal action is to do nothing. This reproduces the classical
-   Whalley–Wilmott asymptotic result — discovered here from raw P&L alone.
+1. **Left graph: A slower to rise delta.** The learned position-vs-spot curve is a smoothed,
+   "positionally aware" version of the BS delta. It declines to chase the steep gamma
+   region near the strike price, as chasing the perfect hedge costs money on every trade.
+2. **Right graph: A no-trade band.** Plotting the network's chosen trade against its current gap 
+to the BS delta, the points form a band whose slope is far shallower than the 45° "trade perfect"
+line — each day it closes only a fraction of the gap instead of snapping to the textbook position. Small gaps get tiny trades (close to leaving it alone); even large gaps stay under-traded. It's the same economic 
+instinct as the classical Whalley–Wilmott no-trade band — don't pay to chase a target you're already near — expressed 
+here as a smooth partial adjustment learned from raw P&L.
 
 ## Repository layout
 
@@ -63,7 +71,7 @@ src/deephedge/
   engine.py      roll_pnl (strategy -> P&L distribution), CVaR, entropic risk
   deep.py        HedgerNet (per-step MLPs, recurrent in previous position),
                  differentiable CVaR (Rockafellar–Uryasev), training loop
-  common.py      canonical problem setup, batch factories, unified evaluation
+  common.py      constant problem setup, batch factories, evaluation strategies
 scripts/
   exp1_headline_gbm.py      train + evaluate on GBM        (Result 1)
   exp2_headline_heston.py   train + evaluate on Heston     (Result 2)
@@ -78,8 +86,8 @@ results/                    metrics.json, trained models, figures
 
 ```bash
 pip install -r requirements.txt
-pytest tests/ -q            # 9 tests, ~45 s
-python scripts/run_all.py   # all results + figures, ~15-20 min on laptop CPU
+pytest tests/ -q            # 9 tests, ~15 s
+python scripts/run_all.py   # all results + figures, ~45-60 min on laptop CPU
 ```
 
 All randomness is seeded; evaluation seeds are disjoint from training seeds.
@@ -95,8 +103,10 @@ paths is rolled through the policy to terminal P&L (option payoff, trading
 gains, proportional costs); the loss is the CVaR-95 of that P&L written in the
 Rockafellar–Uryasev form `w + E[(-PnL - w)+]/(1-α)` with `w` a learned scalar,
 which makes the tail risk differentiable. Adam with cosine LR decay,
-batch 8192, 1,500 steps; the simulator provides effectively infinite training
-data, so evaluation happens exclusively on held-out seeds.
+batch 8192, 3,000 steps; the simulator provides effectively infinite training
+data, so evaluation happens exclusively on held-out seeds. The 3,000-step budget
+matters: CVaR-95 only sees the worst ~5% of each batch, so it converges late —
+too short a budget understates the edge (and can even flip its sign).
 
 ## What the tests guard
 

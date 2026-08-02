@@ -1,0 +1,8 @@
+# Personal end-to-end walkthrough — for my own understanding, not part of the repo.
+HOW_IT_WORKS.md
+
+# Python / tooling junk
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store

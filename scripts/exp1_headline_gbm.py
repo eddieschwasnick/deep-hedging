@@ -40,7 +40,10 @@ EVAL_PATHS = 50_000
 EVAL_SEED = 999_001
 
 # Now run the comparison: train the deep hedger, then evaluate both it and the BS delta hedge on fresh paths. Save the histogram and metrics.
-def run(outdir, seed=0, steps=1500):
+# steps=3000 is deliberate. The CVaR-95 loss only gets gradient from the worst 5% of each batch, so it
+# converges late — below ~1500 steps the model isn't done and the reduction reads far too low (I saw it
+# print single digits, even negatives). By 3000 it's on the plateau. Don't lower this or the headline lies.
+def run(outdir, seed=0, steps=3000):
     '''
     Args:
         outdir: directory to save model, histogram, and metrics

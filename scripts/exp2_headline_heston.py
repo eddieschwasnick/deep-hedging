@@ -32,7 +32,9 @@ EVAL_SEED = 999_002
 
 # Train the Heston deep hedger, then score it against the inst-vol delta hedge on fresh paths and
 # save the P&L histogram plus metrics. Mirrors exp1 step for step, just in the stochastic-vol world.
-def run(outdir, seed=0, steps=1500):
+# steps=3000 for the same reason as the GBM headline: CVaR-95 converges late, so a short budget
+# understates the edge. Kept identical to exp1 so the two markets are trained on equal footing.
+def run(outdir, seed=0, steps=3000):
     """Run the Heston headline comparison and write the figure and metrics.
 
     Args:
