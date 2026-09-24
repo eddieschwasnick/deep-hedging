@@ -4,7 +4,7 @@
 for European calls under proportional transaction costs, trained end-to-end by
 backpropagating a tail-risk objective (95% CVaR) through a differentiable
 P&L simulation. Benchmarked against Black–Scholes delta hedging on out-of-sample
-GBM and Heston (stochastic-volatility) paths.
+GBM (constant-volatility) and Heston (stochastic-volatility) paths.
 
 Reference: Bühler, Gonon, Teichmann & Wood, *Deep Hedging*, Quantitative Finance 19(8), 2019.
 
