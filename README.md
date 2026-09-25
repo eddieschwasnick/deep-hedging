@@ -86,7 +86,7 @@ results/                    metrics.json, trained models, figures
 ```bash
 pip install -r requirements.txt
 pytest tests/ -q            # 9 tests, ~15 s
-python scripts/run_all.py   # all results + figures, ~45-60 min on laptop CPU
+python scripts/run_all.py   # all results + figures, ~15-20 min on laptop CPU
 ```
 
 All randomness is seeded; evaluation seeds are disjoint from training seeds.
@@ -94,9 +94,9 @@ All randomness is seeded; evaluation seeds are disjoint from training seeds.
 ## Method in one paragraph
 
 The strategy is a sequence of small MLPs, one per trading day; day *k*'s network
-maps (log-moneyness, time-to-maturity[, instantaneous variance]) **plus its own
+maps (log-moneyness, time-to-maturity, instantaneous variance[Heston only]) **plus its own
 previous position** to the position held over the next interval. Feeding back
-the previous position is what lets a no-trade band exist — without it the
+the previous position is what lets a no-trade band exist, as without it the
 policy cannot express "I'm close enough, don't trade." A batch of simulated
 paths is rolled through the policy to terminal P&L (option payoff, trading
 gains, proportional costs); the loss is the CVaR-95 of that P&L written in the
@@ -104,8 +104,8 @@ Rockafellar–Uryasev form `w + E[(-PnL - w)+]/(1-α)` with `w` a learned scalar
 which makes the tail risk differentiable. Adam with cosine LR decay,
 batch 8192, 3,000 steps; the simulator provides effectively infinite training
 data, so evaluation happens exclusively on held-out seeds. The 3,000-step budget
-matters: CVaR-95 only sees the worst ~5% of each batch, so it converges late —
-too short a budget understates the edge (and can even flip its sign).
+matters: CVaR-95 only sees the worst ~5% of each batch, so it converges late and too short of a budget 
+understates the edge (and can even flip its sign to being a negative edge).
 
 ## What the tests guard
 
