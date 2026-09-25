@@ -45,13 +45,6 @@ def roll_pnl(S, deltas, payoff, price_charged, cost_rate=0.0):
     return -payoff + price_charged + trading_gains - costs
 
 
-# ---------------------------------------------------------------------------
-# Risk measures — how you score a whole P&L distribution with one number.
-# Convention: these return "badness". Lower = better. (rho in the paper.)
-# ---------------------------------------------------------------------------
-# Smooth risk measure: (1/lam) log E[exp(-lam * PnL)]. It cares about the whole distribution
-# but punishes left-tail losses exponentially, so it's differentiable everywhere (no kink) —
-# handy as a training loss. lam is the risk aversion; bigger lam means more tail-shy.
 def entropic_risk(pnl, lam=1.0):
     """Entropic risk measure of a P&L sample.
 

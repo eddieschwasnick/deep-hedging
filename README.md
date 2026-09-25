@@ -8,7 +8,7 @@ GBM (constant-volatility) and Heston (stochastic-volatility) paths.
 
 Reference: Bühler, Gonon, Teichmann & Wood, *Deep Hedging*, Quantitative Finance 19(8), 2019.
 
-## Headline results
+## Results
 
 Evaluated on **50,000 out-of-sample paths per market** (training never sees these
 seeds), 30-day at-the-money European call, daily rebalancing, 1% proportional

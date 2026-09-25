@@ -11,12 +11,6 @@ Heston comes later (Week 2); it's here so you can peek.
 import numpy as np
 
 
-# ---------------------------------------------------------------------------
-# Black-Scholes world
-# ---------------------------------------------------------------------------
-# Black-Scholes stock paths. We simulate in log-space, so the increments are exactly normal and
-# there's no discretization error in the SDE itself — the only randomness is the Brownian noise.
-# One call returns the whole batch, shape (n_paths, n_steps+1), with every path starting at s0.
 def simulate_gbm(s0, mu, sigma, T, n_steps, n_paths, seed=0):
     """Simulate geometric Brownian motion paths: dS = mu S dt + sigma S dW.
 
@@ -81,13 +75,6 @@ def bs_price_delta(S, K, T_remaining, sigma, r=0.0):
     return price, delta
 
 
-# ---------------------------------------------------------------------------
-# Heston world (stochastic volatility) — for Week 2
-# ---------------------------------------------------------------------------
-# Stochastic-vol world: the variance itself follows a mean-reverting process correlated with the
-# stock. We step it forward with full-truncation Euler — clip variance at 0 before using it, which
-# is the standard fix for the classic Heston gotcha where a naive scheme lets variance go negative.
-# The negative rho gives the leverage effect (vol spikes when the stock drops).
 def simulate_heston(s0, v0, alpha, b, sigma_v, rho, T, n_steps, n_paths, seed=0):
     """Simulate Heston stock and variance paths (full-truncation Euler).
 
