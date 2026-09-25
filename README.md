@@ -41,10 +41,10 @@ The edge is positive at every cost level (≈20–38% CVaR-95 reduction) and the
 band is tight. Because of this we can infer that this isn't luck and holds significant signals.
 The edge is shows it is the smallest at near-zero costs which is expected as delta hedging should be
 close to optimal in a frictionless market. This leads to there being less to gain in the beginning but still 
-then grows and plateaus in the 20–38% range as frictions bite. The band widens slightly around 1–1.5% cost: at
-those mid-cost levels the hedge-tightly-vs-trade-rarely tradeoff is most
-balanced, so the CVaR loss surface is flattest and the tail objective (the trailing 5%) takes the longest to converge.
-Testing had to take place as the original runs of the experiment saw wide variance at specific transaction cost levels 
+then grows and plateaus in the 20–38% range as transaction cost frictions increase. The band widens slightly around 1–1.5% cost as at those mid-cost levels the hedge-tightly-vs-trade-rarely tradeoff is most
+at balance. This means there us no clear winner as hedging tightly and trading rarely rarely give similar
+tail risk. The CVaR loss surface is flattest near its optimum, and the CVaR-95 only learns from the worst
+5% of paths meaning its gradients are also noisy. This pair of a flat loss surface due to balance and the noisy tail objectives likely created a perfect enviornment for slow convergence. Testing had to take place as the original runs of the experiment saw wide variance at specific low/ high transaction cost levels 
 due to the delay in comvergence. This is why every model here trains for 3,000 steps rather then shorter.
 
 ## Where and why the learned strategy diverges from delta hedging
@@ -59,8 +59,7 @@ Two mechanisms can be seen, both cost-driven and lead to a similar summary:
 2. **Right graph: A no-trade band.** Plotting the network's chosen trade against its current gap 
 to the BS delta, the points form a band whose slope is far shallower than the 45° "trade perfect"
 line — each day it closes only a fraction of the gap instead of snapping to the textbook position. Small gaps get tiny trades (close to leaving it alone); even large gaps stay under-traded. It's the same economic 
-instinct as the classical Whalley–Wilmott no-trade band — don't pay to chase a target you're already near — expressed 
-here as a smooth partial adjustment learned from raw P&L.
+instinct as the classical Whalley–Wilmott no-trade band as don't pay to chase a target you're already near, which in this case expressed as a smooth partial adjustment learned from raw P&L.
 
 ## Repository layout
 
