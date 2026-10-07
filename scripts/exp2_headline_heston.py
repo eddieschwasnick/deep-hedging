@@ -11,11 +11,11 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from deephedge.common import (S0, K, T, N, HESTON, P0_HESTON, make_batch_heston,
-                              heston_features, evaluate)
+                              heston_features, evaluate, band_benchmark)
 from deephedge.markets import simulate_heston
 from deephedge.baselines import delta_hedge_heston
 from deephedge.deep import train_hedger
-from deephedge.plotting import style, ORANGE, GREEN
+from deephedge.plotting import style, ORANGE, GREEN, BLUE
 
 # Same 1% proportional cost as the GBM headline so the two results are directly comparable. The
 # only thing changing between exp1 and exp2 is the market. See exp1 for why 1% (large enough to see).
@@ -28,6 +28,10 @@ EVAL_PATHS = 50_000
 # Evaluation seed, held fixed and separate from any training seed so every run scores on the same
 # out-of-sample paths. Different from exp1's seed so GBM and Heston aren't secretly reusing paths.
 EVAL_SEED = 999_002
+
+# Separate paths for tuning the no-trade band width of the banded benchmark, so neither the band nor
+# the deep hedger ever sees the evaluation paths before being scored on them.
+TUNE_SEED = 999_012
 
 
 # Train the Heston deep hedger, then score it against the inst-vol delta hedge on fresh paths and
@@ -65,7 +69,17 @@ def run(outdir, seed=0, steps=3000):
     with torch.no_grad():
         d_deep = model(torch.tensor(heston_features(S, V))).numpy()
 
-    m = evaluate(S, d_bench, d_deep, payoff, P0_HESTON, COST)
+    S_tune, _ = simulate_heston(S0, HESTON["v0"], HESTON["alpha"], HESTON["b"],
+                                HESTON["sigma_v"], HESTON["rho"], T, N,
+                                n_paths=EVAL_PATHS, seed=TUNE_SEED)
+    d_band, h = band_benchmark(S, S_tune, P0_HESTON, COST)
+
+    m = evaluate(S, d_bench, d_deep, payoff, P0_HESTON, COST, deltas_band=d_band)
+    m["band_width"] = h
+    # Share of (path, day) points where instantaneous vol is below 1%. These parameters violate the
+    # Feller condition (2*alpha*b << sigma_v^2), so V sits near zero a lot, and there the inst-vol
+    # delta becomes a 0/1 step that flips whenever spot crosses the strike.
+    m["frac_days_vol_below_1pct"] = float((V[:, :N] < 1e-4).mean())
 
     # Roll both P&L distributions again for the histogram (evaluate already has the summary numbers).
     from deephedge.engine import roll_pnl
@@ -75,9 +89,11 @@ def run(outdir, seed=0, steps=3000):
     bins = np.linspace(-8, 4, 90)
     ax.hist(pnl_b, bins=bins, color=ORANGE, alpha=0.6, label="delta hedge (inst. vol)")
     ax.hist(pnl_d, bins=bins, color=GREEN, alpha=0.7, label="deep hedge (CVaR-95)")
+    ax.hist(roll_pnl(S, d_band, payoff, P0_HESTON, COST), bins=bins, histtype="step", color=BLUE,
+            lw=1.6, label=f"banded delta hedge (h={h:.2f})")
     ax.axvline(0, color="k", lw=0.8); ax.legend(loc="upper left")
-    ax.set_title(f"Heston, {COST:.0%} costs — CVaR-95 cut by {m['cvar95_reduction_pct']:.0f}% "
-                 f"({m['delta_hedge']['cvar95']:.2f} → {m['deep_hedge']['cvar95']:.2f})")
+    ax.set_title(f"Heston, {COST:.0%} costs — CVaR-95 cut {m['cvar95_reduction_pct']:.0f}% vs delta, "
+                 f"{m['cvar95_reduction_vs_band_pct']:.0f}% vs banded delta")
     ax.set_xlabel(f"terminal P&L on {EVAL_PATHS:,} out-of-sample paths")
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "figures", "heston_headline.png"), bbox_inches="tight")

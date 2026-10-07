@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from .markets import simulate_gbm, simulate_heston, bs_price_delta
 from .engine import roll_pnl, cvar
+from .baselines import delta_hedge_gbm, band_hedge, tune_band_width
 
 # Same PROBLEM SETUP ACROSS ALL EXPERIMENTS :
 # One 30-day at-the-money call: S0 = K = 100, 20% vol, rebalanced daily (N = 30 steps).
@@ -139,26 +140,54 @@ def turnover(deltas):
     return float(np.abs(np.diff(pad, axis=1)).sum(axis=1).mean())
 
 
-# Scores both hedgers on the exact same paths and payoff so the comparison is apples-to-apples.
-# Each position matrix goes through the same roll_pnl, and we report the summary stats plus the
-# headline number: how much the deep hedger cuts the CVaR-95 tail relative to delta hedging.
-def evaluate(S, deltas_bench, deltas_deep, payoff, p0, cost_rate):
-    """Score the benchmark and deep hedgers on one shared set of paths.
+# The banded benchmark used in every experiment: the BS delta at 20% vol with a no-trade band whose
+# width is tuned for this cost on separate paths. 20% is the GBM vol and also sqrt(long-run variance)
+# under Heston. On Heston we don't band the instantaneous-vol delta, because vol sits near zero on
+# almost half of path-days there and that delta flips between ~0 and ~1, so banding it is weaker.
+def band_benchmark(S, S_tune, p0, cost_rate):
+    """Tune and apply the no-trade-band delta hedge.
 
     Args:
-        S: (n_paths, N+1) price paths both strategies are evaluated on.
+        S: (n_paths, N+1) evaluation price paths.
+        S_tune: (m_paths, N+1) separate tuning paths from the same market.
+        p0: cash collected upfront.
+        cost_rate: proportional transaction cost epsilon.
+
+    Returns:
+        (positions on S, chosen half-width h).
+    """
+    pay_tune = np.maximum(S_tune[:, -1] - K, 0.0)
+    h = tune_band_width(delta_hedge_gbm(S_tune, K, T, SIGMA), S_tune, pay_tune, p0, cost_rate)
+    return band_hedge(delta_hedge_gbm(S, K, T, SIGMA), h), h
+
+
+# Scores every hedger on the exact same paths and payoff so the comparison is apples-to-apples.
+# Each position matrix goes through the same roll_pnl, and we report the summary stats plus the
+# headline numbers: how much the deep hedger cuts the CVaR-95 tail relative to each benchmark.
+def evaluate(S, deltas_bench, deltas_deep, payoff, p0, cost_rate, deltas_band=None):
+    """Score the benchmark(s) and the deep hedger on one shared set of paths.
+
+    Args:
+        S: (n_paths, N+1) price paths every strategy is evaluated on.
         deltas_bench: (n_paths, N) benchmark (delta-hedge) positions.
         deltas_deep: (n_paths, N) deep-hedger positions.
         payoff: (n_paths,) option payoff at maturity.
         p0: cash collected upfront (the price charged).
         cost_rate: proportional transaction cost epsilon.
+        deltas_band: optional (n_paths, N) no-trade-band benchmark positions.
 
     Returns:
-        dict keyed by "delta_hedge" and "deep_hedge" (each with mean_pnl, std_pnl, cvar95,
-        cvar99, turnover), plus "cvar95_reduction_pct" — the percentage cut in the CVaR-95 tail.
+        dict keyed by "no_hedge", "delta_hedge", "deep_hedge" and (if given) "band_hedge", each
+        with mean_pnl, std_pnl, cvar95, cvar99, turnover; plus "cvar95_reduction_pct" (vs the
+        delta hedge) and, with a band benchmark, "cvar95_reduction_vs_band_pct".
     """
     out = {}
-    for name, d in [("delta_hedge", deltas_bench), ("deep_hedge", deltas_deep)]:
+    # "no_hedge" (hold zero shares, just sell the option) is the floor every hedge should beat.
+    hedgers = [("no_hedge", np.zeros_like(deltas_deep)),
+               ("delta_hedge", deltas_bench), ("deep_hedge", deltas_deep)]
+    if deltas_band is not None:
+        hedgers.append(("band_hedge", deltas_band))
+    for name, d in hedgers:
         pnl = roll_pnl(S, d, payoff, p0, cost_rate=cost_rate)
         out[name] = {
             "mean_pnl": float(pnl.mean()),
@@ -167,6 +196,10 @@ def evaluate(S, deltas_bench, deltas_deep, payoff, p0, cost_rate):
             "cvar99": float(cvar(pnl, 0.99)),
             "turnover": turnover(d),
         }
-    b, dp = out["delta_hedge"]["cvar95"], out["deep_hedge"]["cvar95"]
+    dp = out["deep_hedge"]["cvar95"]
+    b = out["delta_hedge"]["cvar95"]
     out["cvar95_reduction_pct"] = float(100.0 * (b - dp) / abs(b))
+    if deltas_band is not None:
+        bb = out["band_hedge"]["cvar95"]
+        out["cvar95_reduction_vs_band_pct"] = float(100.0 * (bb - dp) / abs(bb))
     return out

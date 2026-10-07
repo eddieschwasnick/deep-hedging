@@ -121,3 +121,17 @@ def test_heston_variance_stays_nonnegative_and_mean_reverts():
                            50_000, seed=7)
     assert V.min() >= 0.0
     assert abs(V[:, -1].mean() - 0.04) < 0.004   # b = 0.04, starts at b
+
+
+# The banded benchmark: h=0 must reproduce the target exactly, every position must sit inside the
+# band, and widening the band can only reduce trading.
+def test_band_hedge_stays_in_band_and_trades_less():
+    from deephedge.baselines import band_hedge, delta_hedge_gbm
+    from deephedge.common import turnover
+    S = simulate_gbm(100.0, 0.0, 0.2, 30 / 365, 30, n_paths=2000, seed=3)
+    target = delta_hedge_gbm(S, 100.0, 30 / 365, 0.2)
+    assert np.allclose(band_hedge(target, 0.0), target)
+    banded = band_hedge(target, 0.1)
+    assert np.all(np.abs(banded - target) <= 0.1 + 1e-12)
+    assert turnover(banded) < turnover(target)
+    assert turnover(band_hedge(target, 0.3)) < turnover(banded)

@@ -12,11 +12,11 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from deephedge.common import (S0, K, SIGMA, T, N, P0_GBM, make_batch_gbm,
-                              gbm_features, evaluate)
+                              gbm_features, evaluate, band_benchmark)
 from deephedge.markets import simulate_gbm
 from deephedge.baselines import delta_hedge_gbm
 from deephedge.deep import train_hedger
-from deephedge.plotting import style, BLUE
+from deephedge.plotting import style, BLUE, ORANGE
 
 # Fewer paths than the headline runs (30k not 50k) because this script trains a model for every
 # (cost, seed) pair — a lot of trainings back to back — so we trade a little tail precision for time.
@@ -32,6 +32,39 @@ COSTS = [0.0025, 0.005, 0.0075, 0.01, 0.0125, 0.015, 0.0175, 0.02]
 SEEDS = [0, 1, 2]
 
 
+# Mean reduction vs cost for each benchmark, with a ±1 std band across seeds and the raw per-seed
+# points on top so the spread is honest. Two curves: the edge over the cost-blind delta hedge, and the
+# edge over the tuned no-trade-band delta hedge (the harder benchmark). Shared with the Heston sweep
+# (exp5) so the two figures are drawn identically.
+def plot_sweep(rows, title, path):
+    """Plot seed-averaged CVaR-95 reduction against cost, vs both benchmarks, and save it.
+
+    Args:
+        rows: per-cost dicts as returned by run().
+        title: figure title.
+        path: file to save the figure to.
+    """
+    fig, ax = plt.subplots(figsize=(7.6, 4.6))
+    xs = np.array([r["cost"] * 100 for r in rows])
+    for key, color, label in [("reduction", BLUE, "vs delta hedge"),
+                              ("reduction_vs_band", ORANGE, "vs banded delta hedge")]:
+        mean = np.array([r[f"{key}_mean"] for r in rows])
+        std = np.array([r[f"{key}_std"] for r in rows])
+        ax.fill_between(xs, mean - std, mean + std, color=color, alpha=0.15)
+        ax.plot(xs, mean, "o-", color=color, lw=2, ms=7, label=label)
+        for r in rows:
+            vals = r["reductions" if key == "reduction" else "reductions_vs_band"]
+            ax.scatter([r["cost"] * 100] * len(vals), vals, color=color, s=12, alpha=0.35, zorder=3)
+    ax.axhline(0, color="k", lw=0.8)
+    ax.set_xlabel("proportional transaction cost (%)")
+    ax.set_ylabel("CVaR-95 reduction (%)")
+    ax.set_title(title)
+    ax.legend(loc="lower left", title="mean ± 1 std over seeds")
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
 # Retrain a hedger at every (cost, seed) pair, average the CVaR-95 reduction over seeds at each cost,
 # and plot the mean against cost with a ±1 std band. steps=3000 matters: CVaR-95 only sees the worst
 # 5% of paths, so it converges late and abruptly. 2000 steps clears the cliff at the cheap and expensive
@@ -41,7 +74,7 @@ def run(outdir, seeds=SEEDS, steps=3000):
     """Sweep the transaction-cost level (seed-averaged) and plot the deep hedger's edge against it.
 
     Args:
-        outdir: directory to save the figure into.
+        outdir: results directory; the figure and the per-cost rows (JSON) are saved there.
         seeds: list of training seeds to average at every cost level.
         steps: number of training steps per model.
 
@@ -57,49 +90,46 @@ def run(outdir, seeds=SEEDS, steps=3000):
                          seed=700_000 + int(eps * 1e4))
         payoff = np.maximum(S[:, -1] - K, 0.0)
         d_bench = delta_hedge_gbm(S, K, T, SIGMA)
+        # Banded benchmark, its width tuned for this cost on separate paths. Seed-independent, so
+        # computed once per cost like the plain delta hedge.
+        S_tune = simulate_gbm(S0, 0.0, SIGMA, T, N, n_paths=EVAL_PATHS,
+                              seed=750_000 + int(eps * 1e4))
+        d_band, h = band_benchmark(S, S_tune, P0_GBM, eps)
 
-        # Train one model per seed and collect the reduction each one achieves. delta_cvar95 is the
-        # same every seed (the benchmark doesn't depend on training), so we just keep the last one.
-        reds, deep_cvars, delta_cvar95 = [], [], None
+        # Train one model per seed and collect the reduction each one achieves vs both benchmarks.
+        # The benchmarks don't depend on training, so their CVaRs are read off the last evaluation.
+        reds, reds_band, deep_cvars, m = [], [], [], None
         for seed in seeds:
             model, _ = train_hedger(make_batch_gbm(batch=8192), N, n_features=2, loss="cvar",
                                     alpha=0.95, cost_rate=eps, recurrent=True,
                                     steps=steps, seed=seed, log_every=0)
             with torch.no_grad():
                 d_deep = model(torch.tensor(gbm_features(S))).numpy()
-            m = evaluate(S, d_bench, d_deep, payoff, P0_GBM, eps)
+            m = evaluate(S, d_bench, d_deep, payoff, P0_GBM, eps, deltas_band=d_band)
             reds.append(m["cvar95_reduction_pct"])
+            reds_band.append(m["cvar95_reduction_vs_band_pct"])
             deep_cvars.append(m["deep_hedge"]["cvar95"])
-            delta_cvar95 = m["delta_hedge"]["cvar95"]
 
-        reds = np.asarray(reds)
+        reds, reds_band = np.asarray(reds), np.asarray(reds_band)
         rows.append({"cost": eps,
                      "reduction_mean": float(reds.mean()),
                      "reduction_std": float(reds.std()),
                      "reductions": reds.tolist(),
-                     "delta_cvar95": float(delta_cvar95),
+                     "reduction_vs_band_mean": float(reds_band.mean()),
+                     "reduction_vs_band_std": float(reds_band.std()),
+                     "reductions_vs_band": reds_band.tolist(),
+                     "band_width": h,
+                     "no_hedge_cvar95": m["no_hedge"]["cvar95"],
+                     "delta_cvar95": m["delta_hedge"]["cvar95"],
+                     "band_cvar95": m["band_hedge"]["cvar95"],
                      "deep_cvar95_mean": float(np.mean(deep_cvars))})
-        print(f"[sweep] cost {eps:.2%}: reduction {reds.mean():+.1f}% ± {reds.std():.1f}pp  "
-              f"(seeds {list(reds.round(1))})")
+        print(f"[sweep] cost {eps:.2%}: vs delta {reds.mean():+.1f}% ± {reds.std():.1f}pp, "
+              f"vs band (h={h:.2f}) {reds_band.mean():+.1f}% ± {reds_band.std():.1f}pp", flush=True)
 
-    # Mean reduction vs cost, with a ±1 std band across seeds and the raw per-seed points on top so
-    # the spread is honest — you can see how much of the curve is signal vs run-to-run luck.
-    fig, ax = plt.subplots(figsize=(7.6, 4.6))
-    xs = np.array([r["cost"] * 100 for r in rows])
-    mean = np.array([r["reduction_mean"] for r in rows])
-    std = np.array([r["reduction_std"] for r in rows])
-    ax.fill_between(xs, mean - std, mean + std, color=BLUE, alpha=0.15, label="±1 std across seeds")
-    ax.plot(xs, mean, "o-", color=BLUE, lw=2, ms=7, label="mean over seeds")
-    for r in rows:
-        ax.scatter([r["cost"] * 100] * len(r["reductions"]), r["reductions"],
-                   color=BLUE, s=12, alpha=0.35, zorder=3)
-    ax.axhline(0, color="k", lw=0.8)
-    ax.set_xlabel("proportional transaction cost (%)")
-    ax.set_ylabel("CVaR-95 reduction vs delta hedge (%)")
-    ax.set_title("The deep hedger's edge grows with frictions")
-    ax.legend(loc="lower right")
-    fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "figures", "cost_sweep.png"), bbox_inches="tight")
+    plot_sweep(rows, "Deep hedger's CVaR-95 edge vs transaction costs (GBM)",
+               os.path.join(outdir, "figures", "cost_sweep.png"))
+    with open(os.path.join(outdir, "sweep_gbm.json"), "w") as f:
+        json.dump(rows, f, indent=2)
     return rows
 
 

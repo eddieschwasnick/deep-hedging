@@ -15,11 +15,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from deephedge.common import (S0, K, SIGMA, T, N, P0_GBM, make_batch_gbm, gbm_features, evaluate)
+from deephedge.common import (S0, K, SIGMA, T, N, P0_GBM, make_batch_gbm, gbm_features, evaluate,
+                              band_benchmark)
 from deephedge.markets import simulate_gbm
 from deephedge.baselines import delta_hedge_gbm
 from deephedge.deep import train_hedger
-from deephedge.plotting import style, ORANGE, GREEN
+from deephedge.plotting import style, ORANGE, GREEN, BLUE
 from deephedge.engine import roll_pnl
 
 # Transaction-cost drag has two levers: the per-trade rate ε and the number of rebalances n. For a naive delta
@@ -39,8 +40,12 @@ EVAL_PATHS = 50_000
 # never use seed in training (prevent overfiting)
 EVAL_SEED = 999_001
 
+# Separate paths for tuning the no-trade band width of the banded benchmark, so neither the band nor
+# the deep hedger ever sees the evaluation paths before being scored on them.
+TUNE_SEED = 999_011
+
 # Now run the comparison: train the deep hedger, then evaluate both it and the BS delta hedge on fresh paths. Save the histogram and metrics.
-# steps=3000 is deliberate. The CVaR-95 loss only gets gradient from the worst 5% of each batch, so it
+# steps=3000 to allow for convergence as CVaR-95 has a smaller pool of data to optimize with. The CVaR-95 loss only gets gradient from the worst 5% of each batch, so it
 # converges late — below ~1500 steps the model isn't done and the reduction reads far too low (I saw it
 # print single digits, even negatives). By 3000 it's on the plateau. Don't lower this or the headline lies.
 def run(outdir, seed=0, steps=3000):
@@ -73,7 +78,11 @@ def run(outdir, seed=0, steps=3000):
     with torch.no_grad():
         d_deep = model(torch.tensor(gbm_features(S))).numpy()
 
-    m = evaluate(S, d_bench, d_deep, payoff, P0_GBM, COST)
+    S_tune = simulate_gbm(S0, 0.0, SIGMA, T, N, n_paths=EVAL_PATHS, seed=TUNE_SEED)
+    d_band, h = band_benchmark(S, S_tune, P0_GBM, COST)
+
+    m = evaluate(S, d_bench, d_deep, payoff, P0_GBM, COST, deltas_band=d_band)
+    m["band_width"] = h
 
     pnl_b = roll_pnl(S, d_bench, payoff, P0_GBM, COST)
     pnl_d = roll_pnl(S, d_deep,  payoff, P0_GBM, COST)
@@ -81,9 +90,11 @@ def run(outdir, seed=0, steps=3000):
     bins = np.linspace(-7, 4, 90)
     ax.hist(pnl_b, bins=bins, color=ORANGE, alpha=0.6, label="BS delta hedge")
     ax.hist(pnl_d, bins=bins, color=GREEN, alpha=0.7, label="deep hedge (CVaR-95)")
+    ax.hist(roll_pnl(S, d_band, payoff, P0_GBM, COST), bins=bins, histtype="step", color=BLUE,
+            lw=1.6, label=f"banded delta hedge (h={h:.2f})")
     ax.axvline(0, color="k", lw=0.8); ax.legend(loc="upper left")
-    ax.set_title(f"GBM, {COST:.0%} costs — CVaR-95 cut by {m['cvar95_reduction_pct']:.0f}% "
-                 f"({m['delta_hedge']['cvar95']:.2f} → {m['deep_hedge']['cvar95']:.2f})")
+    ax.set_title(f"GBM, {COST:.0%} costs — CVaR-95 cut {m['cvar95_reduction_pct']:.0f}% vs delta, "
+                 f"{m['cvar95_reduction_vs_band_pct']:.0f}% vs banded delta")
     ax.set_xlabel(f"terminal P&L on {EVAL_PATHS:,} out-of-sample paths")
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "figures", "gbm_headline.png"), bbox_inches="tight")
